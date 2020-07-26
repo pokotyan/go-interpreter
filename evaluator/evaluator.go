@@ -28,19 +28,19 @@ var (
 func Eval(node ast.Node, env *object.Environment) object.Object {
 	switch node := node.(type) {
 	// --------------
-	// Statements
+	// Statements（評価の結果、値を返さない）
 	// --------------
 	case *ast.Program:
-		fmt.Println("Program--------------")
+		//fmt.Println("Program--------------")
 		return evalProgram(node, env)
 	case *ast.ExpressionStatement:
-		fmt.Println("ExpressionStatement--------------")
+		//fmt.Println("ExpressionStatement--------------")
 		return Eval(node.Expression, env)
 	case *ast.BlockStatement:
-		fmt.Println("BlockStatement--------------")
+		//fmt.Println("BlockStatement--------------")
 		return evalBlockStatement(node, env)
 	case *ast.ReturnStatement:
-		fmt.Println("ReturnStatement--------------")
+		//fmt.Println("ReturnStatement--------------")
 		val := Eval(node.ReturnValue, env) // ReturnValueはExpressionなので、Eval内ではExpressionStatementが実行される。
 		if isError(val) {
 			return val
@@ -48,6 +48,7 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		// ReturnStatementが来たら、returnの右側の式を評価して、その値を返す。なので、return文の後に何か書いていても評価されない。
 		return &object.ReturnValue{Value: val}
 	case *ast.LetStatement:
+		//fmt.Println("LetStatement--------------")
 		val := Eval(node.Value, env)
 		if isError(val) {
 			return val
@@ -55,23 +56,26 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		env.Set(node.Name.Value, val) // 評価結果をletで宣言したIDENTに束縛させる
 
 	// --------------
-	// Expressions
+	// Expressions（評価の結果、値を返す）
 	// --------------
 	case *ast.IntegerLiteral:
-		fmt.Println("IntegerLiteral--------------")
+		//fmt.Println("IntegerLiteral--------------")
 		return &object.Integer{Value: node.Value}
+	case *ast.StringLiteral:
+		//fmt.Println("StringLiteral--------------")
+		return &object.String{Value: node.Value}
 	case *ast.Boolean:
-		fmt.Println("Boolean--------------")
+		//fmt.Println("Boolean--------------")
 		return nativeBoolToBooleanObject(node.Value)
 	case *ast.PrefixExpression: // ! or -
-		fmt.Println("PrefixExpression--------------")
+		//fmt.Println("PrefixExpression--------------")
 		right := Eval(node.Right, env)
 		if isError(right) {
 			return right
 		}
 		return evalPrefixExpression(node.Operator, right)
 	case *ast.InfixExpression:
-		fmt.Println("InfixExpression--------------")
+		//fmt.Println("InfixExpression--------------")
 		left := Eval(node.Left, env)
 		if isError(left) {
 			return left
@@ -82,30 +86,83 @@ func Eval(node ast.Node, env *object.Environment) object.Object {
 		}
 		return evalInfixExpression(node.Operator, left, right)
 	case *ast.IfExpression:
-		fmt.Println("IfExpression--------------")
+		//fmt.Println("IfExpression--------------")
 		return evalIfExpression(node, env)
-	// 変数に束縛された値をenvから確認し、返す
+	// 変数に束縛された値をenvから確認し、返す。
+	// 束縛されている変数が見つからなかった場合は組み込み関数を探し、Builtinオブジェクトを返す。
 	case *ast.Identifier:
+		//fmt.Println("Identifier--------------")
 		return evalIdentifier(node, env)
-	// 関数オブジェクトの生成
+	// ユーザー定義の関数の関数オブジェクトの生成
 	case *ast.FunctionLiteral:
+		//fmt.Println("FunctionLiteral--------------")
 		params := node.Parameters
 		body := node.Body
 		// Envには関数を定義した場所のスコープがはいる
 		return &object.Function{Parameters: params, Env: env, Body: body}
 	// 関数呼び出し
 	case *ast.CallExpression:
-		function := Eval(node.Function, env) // Functionオブジェクトの取得
+		//fmt.Println("CallExpression--------------")
+		// Functionオブジェクトの取得。ここのEvalの処理は、関数がユーザー定義か、組み組みかの違いにより、再帰の流れが異なってくる。
+		// ＜ユーザー定義の関数の場合＞
+		//   parseの結果、node.Functionには、FunctionLiteralのExpressionが入っている。
+		//   なので、Evalの処理はこのあと、 case *ast.FunctionLiteral: の分岐を辿ることになる。
+		//   結果、functionには object.Function が格納される。
+		// ＜組み込み関数の場合＞
+		//   parseの結果、node.Functionには、IdentifierのExpressionが入っている。
+		//   なので、Evalの処理はこのあと、 case *ast.Identifier: の分岐を辿ることになる。
+		//   evalIdentifierの処理の中では、組み込み関数が存在するIDENTの場合、*object.Builtin を返すようになっている。
+		//   結果、functionには object.Builtin が格納される。
+		function := Eval(node.Function, env)
 		if isError(function) {
 			return function
 		}
 
 		args := evalExpressions(node.Arguments, env) // 引数郡（評価済み）を取得。
+		// evalExpressionsの処理内ではArgumentsのいずれかでエラーが発生するとそのエラーのみが返ってくる。でそのエラーを返す。
 		if len(args) == 1 && isError(args[0]) {
 			return args[0]
 		}
 
+		// functionはユーザー定義の関数(object.Function)の場合と、組み込み関数の場合(object.Builtin)がある。
+		// applyFunctionのなかでどちらなのか確認し処理をする。
 		return applyFunction(function, args)
+	case *ast.ArrayLiteral:
+		//fmt.Println("ArrayLiteral--------------")
+		elements := evalExpressions(node.Elements, env)
+		// evalExpressionsの処理内ではElementsのいずれかでエラーが発生するとそのエラーのみが返ってくる。でそのエラーを返す。
+		if len(elements) == 1 && isError(elements[0]) {
+			return elements[0]
+		}
+		return &object.Array{Elements: elements}
+	// 添字アクセス。添字アクセスは配列とハッシュがある。
+	case *ast.IndexExpression:
+		//fmt.Println("IndexExpression--------------")
+		// 添字の対象になる式を評価する。
+		// ・配列の場合
+		// 　Leftの式は最終的に、Evalの case *ast.ArrayLiteral: の分岐を経て object.Array になり、leftに入る。
+		// ・ハッシュの場合
+		// 　Leftの式は最終的に、Evalの case *ast.HashLiteral: の分岐を経て object.Hash になり、leftに入る。
+		left := Eval(node.Left, env)
+		if isError(left) {
+			return left
+		}
+
+		// 添字の式を評価する。
+		// ・配列の場合
+		// 　添字の式は最終的に、Evalの case *ast.IntegerLiteral: の分岐を経て object.Integer になりindexに入る。
+		//   object.Integerにならない式の場合、evalIndexExpressionの処理内でエラーになる。
+		// ・ハッシュの場合
+		// 　添字の式は評価した結果、Hashableインタフェースを満たすオブジェクトであればOK。
+		//   Hashableインタフェースを満たさないものだった場合、evalIndexExpression から呼び出される evalHashIndexExpression の処理でエラーになる。
+		index := Eval(node.Index, env)
+		if isError(index) {
+			return index
+		}
+		return evalIndexExpression(left, index)
+	case *ast.HashLiteral:
+		//fmt.Println("HashLiteral--------------")
+		return evalHashLiteral(node, env)
 	}
 
 	return nil
@@ -173,6 +230,9 @@ func evalInfixExpression(
 	case left.Type() == object.INTEGER_OBJ && right.Type() == object.INTEGER_OBJ:
 		// 四則演算 or 比較の評価をする
 		return evalIntegerInfixExpression(operator, left, right)
+	// 文字列結合なら
+	case left.Type() == object.STRING_OBJ && right.Type() == object.STRING_OBJ:
+		return evalStringInfixExpression(operator, left, right)
 	// boolの比較 ex: true == true
 	case operator == "==":
 		// TRUE、FALSEのオブジェクトはポインタ。（つどオブジェクト生成はしていない）なのでここではポインタ同士の比較をしている。
@@ -219,6 +279,21 @@ func evalIntegerInfixExpression(
 	default:
 		return newError("unknown operator: %s %s %s", left.Type(), operator, right.Type())
 	}
+}
+
+func evalStringInfixExpression(
+	operator string,
+	left, right object.Object,
+) object.Object {
+	// 文字列は + の結合のみサポートする。文字列同士の引き算や ==、!= の比較などは対応していない。
+	if operator != "+" {
+		return newError("unknown operator: %s %s %s",
+			left.Type(), operator, right.Type())
+	}
+
+	leftVal := left.(*object.String).Value
+	rightVal := right.(*object.String).Value
+	return &object.String{Value: leftVal + rightVal}
 }
 
 func evalProgram(program *ast.Program, env *object.Environment) object.Object {
@@ -301,15 +376,18 @@ func evalIdentifier(
 	node *ast.Identifier,
 	env *object.Environment,
 ) object.Object {
-	val, ok := env.Get(node.Value)
-	if !ok {
-		return newError("identifier not found: " + node.Value)
+	if val, ok := env.Get(node.Value); ok {
+		return val
 	}
 
-	return val
+	if builtin, ok := builtins[node.Value]; ok {
+		return builtin
+	}
+
+	return newError("identifier not found: " + node.Value)
 }
 
-// 関数の引数郡の評価
+// 関数の引数郡と配列内の要素の評価
 func evalExpressions(
 	exps []ast.Expression,
 	env *object.Environment,
@@ -319,6 +397,7 @@ func evalExpressions(
 	// 引数は左から順に評価される。
 	for _, e := range exps {
 		evaluated := Eval(e, env)
+		// 各要素のいずれかでerrorが発生しようものなら、後続の要素の評価はせず、発生したエラーのみを返す。
 		if isError(evaluated) {
 			return []object.Object{evaluated}
 		}
@@ -328,18 +407,22 @@ func evalExpressions(
 	return result
 }
 
-// 関数が実行される時は、現在の環境で評価するのではなく、Functionオブジェクトが持っているEnvで評価する。
-// Functionオブジェクトが持っているEnvは、その関数が定義された時の環境への参照。
-// まとめると関数は「自身が定義された環境で評価する」
 func applyFunction(fn object.Object, args []object.Object) object.Object {
-	function, ok := fn.(*object.Function)
-	if !ok {
+	switch fn := fn.(type) {
+	// ユーザー定義の関数なら
+	case *object.Function:
+		// 関数が実行される時は、現在の環境で評価するのではなく、Functionオブジェクトが持っているEnvで評価する。
+		// Functionオブジェクトが持っているEnvは、その関数が定義された時の環境への参照。
+		// まとめると関数は「自身が定義された環境で評価する」
+		extendedEnv := extendFunctionEnv(fn, args) // 関数定義時の環境と引数の束縛をマージしたenvを作る
+		evaluated := Eval(fn.Body, extendedEnv)    // 現在の環境ではなく、関数が持っている環境で評価する
+		return unwrapReturnValue(evaluated)
+	// 組み組み関数なら
+	case *object.Builtin:
+		return fn.Fn(args...)
+	default:
 		return newError("not a function: %s", fn.Type())
 	}
-
-	extendedEnv := extendFunctionEnv(function, args) // 関数定義時の環境と引数の束縛をマージしたenvを作る
-	evaluated := Eval(function.Body, extendedEnv)    // 現在の環境ではなく、関数が持っている環境で評価する
-	return unwrapReturnValue(evaluated)
 }
 
 // ここら辺のenvのコードがクロージャを実現している。
@@ -368,6 +451,83 @@ func extendFunctionEnv(
 	}
 
 	return env
+}
+
+func evalIndexExpression(left, index object.Object) object.Object {
+	switch {
+	case left.Type() == object.ARRAY_OBJ && index.Type() == object.INTEGER_OBJ:
+		return evalArrayIndexExpression(left, index)
+	case left.Type() == object.HASH_OBJ:
+		return evalHashIndexExpression(left, index)
+	default:
+		return newError("index operator not supported: %s", left.Type())
+	}
+}
+
+func evalArrayIndexExpression(array, index object.Object) object.Object {
+	arrayObject := array.(*object.Array)
+	idx := index.(*object.Integer).Value
+	max := int64(len(arrayObject.Elements) - 1)
+
+	// 存在しない添字アクセスはNULLを返す
+	if idx < 0 || idx > max {
+		return NULL
+	}
+
+	return arrayObject.Elements[idx] // goの添字機能を使って添字アクセスを評価する。
+}
+
+func evalHashLiteral(
+	node *ast.HashLiteral,
+	env *object.Environment,
+) object.Object {
+	pairs := make(map[object.HashKey]object.HashPair)
+
+	// Pairsのmapにはキー、バリュー共にexpressionノードが入っている。
+	for keyNode, valueNode := range node.Pairs {
+		key := Eval(keyNode, env) // expressionをEvalし、String、Boolean、Integerオブジェクトのいずれかが生成される
+		if isError(key) {
+			return key
+		}
+
+		// ハッシュのキーになれるオブジェクトはHashableインタフェースを満たす
+		// String、Boolean、IntegerオブジェクトはいずれもHashableインタフェースを満たしている。
+		hashKey, ok := key.(object.Hashable)
+		if !ok {
+			return newError("unusable as hash key: %s", key.Type())
+		}
+
+		value := Eval(valueNode, env) // valueのexpressionノードをEvalし、式の評価結果をvalueに入れる。
+		if isError(value) {
+			return value
+		}
+
+		// object.Hash.PairsのmapのキーはHashKey構造体を入れる。
+		hashed := hashKey.HashKey()
+		pairs[hashed] = object.HashPair{Key: key, Value: value}
+	}
+
+	return &object.Hash{Pairs: pairs}
+}
+
+// hashからindexで指定した添字の値を取り出す
+func evalHashIndexExpression(hash, index object.Object) object.Object {
+	hashObject := hash.(*object.Hash)
+
+	// ハッシュのキーとなれるオブジェクトはHashableインタフェースを満たす必要がある。
+	key, ok := index.(object.Hashable)
+	if !ok {
+		return newError("unusable as hash key: %s", index.Type())
+	}
+
+	// indexで指定したキーから導かれるHashKey構造体に一致するバリューをハッシュから取り出す。
+	// ハッシュのキーの探索にはHashKey()を使う。
+	pair, ok := hashObject.Pairs[key.HashKey()]
+	if !ok {
+		return NULL
+	}
+
+	return pair.Value
 }
 
 func unwrapReturnValue(obj object.Object) object.Object {

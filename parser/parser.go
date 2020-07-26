@@ -17,6 +17,7 @@ const (
 	PRODUCT     // *
 	PREFIX      // -X or !X
 	CALL        // myFunction(X)
+	INDEX       // array[index]
 )
 
 // 優先順位。下に行くほど優先順位高。
@@ -29,7 +30,8 @@ var precedences = map[token.TokenType]int{
 	token.MINUS:    SUM,     // - は同じ優先順位。
 	token.SLASH:    PRODUCT, // 割り算と、
 	token.ASTERISK: PRODUCT, // 掛け算は同じ優先順位。かつ、+や-より優先度が高い。
-	token.LPAREN:   CALL,    // 関数呼び出しの ( は一番優先度が高い。そのため関数呼び出しの () は必ず、木の中で一番深い階層になる。
+	token.LPAREN:   CALL,    // 関数呼び出し。
+	token.LBRACKET: INDEX,   // 配列の添字。関数呼び出しより優先度が高い。add(1 + myArr[1]) という式の場合、 [1] が木の中で一番深い階層になる。
 }
 
 type (
@@ -55,12 +57,13 @@ func New(l *lexer.Lexer) *Parser {
 	}
 
 	// -----初期処理として全てのトークンの解析関数を登録しておく------
-	// 前置（先頭に登場することができるtokenたち）
+	// 前置（先頭に登場する（いきなり登場する）ことができるtokenたち）
 	// BANGとMINUSは前置演算子として使えるので解析関数の中でトークンを一つ進める。
 	// そして、MINUSは前置、中置のどちらにもいる。前置演算子としても使えるし、中置演算子としても当然使える。
 	p.prefixParseFns = make(map[token.TokenType]prefixParseFn)
 	p.registerPrefix(token.IDENT, p.parseIdentifier)
 	p.registerPrefix(token.INT, p.parseIntegerLiteral)
+	p.registerPrefix(token.STRING, p.parseStringLiteral)
 	p.registerPrefix(token.BANG, p.parsePrefixExpression)  // !
 	p.registerPrefix(token.MINUS, p.parsePrefixExpression) // -
 	p.registerPrefix(token.TRUE, p.parseBoolean)
@@ -68,6 +71,8 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(token.LPAREN, p.parseGroupedExpression) // (
 	p.registerPrefix(token.IF, p.parseIfExpression)
 	p.registerPrefix(token.FUNCTION, p.parseFunctionLiteral)
+	p.registerPrefix(token.LBRACKET, p.parseArrayLiteral) // [ 配列リテラルの始まり
+	p.registerPrefix(token.LBRACE, p.parseHashLiteral)    // { ハッシュリテラルの始まり
 
 	// 中置（前置の後に登場することができるトークンたち）
 	p.infixParseFns = make(map[token.TokenType]infixParseFn)
@@ -82,6 +87,8 @@ func New(l *lexer.Lexer) *Parser {
 
 	// 関数呼び出しのための ( に対する中置解析関数の登録
 	p.registerInfix(token.LPAREN, p.parseCallExpression)
+	// 配列の添字 [ のための中置解析関数の登録
+	p.registerInfix(token.LBRACKET, p.parseIndexExpression)
 
 	// Read two tokens, so curToken and peekToken are both set
 	p.nextToken()
@@ -161,7 +168,7 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 	// まずLETのstatementを用意
 	stmt := &ast.LetStatement{Token: p.curToken}
 
-	// トークンを次へ進める。次のトークンがIDENTであればここはtrueになる
+	// 次のトークンがIDENTであれば、トークンを次へ進めた上で、ここはtrueになる
 	if !p.expectPeek(token.IDENT) {
 		return nil
 	}
@@ -341,6 +348,10 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 	return lit
 }
 
+func (p *Parser) parseStringLiteral() ast.Expression {
+	return &ast.StringLiteral{Token: p.curToken, Value: p.curToken.Literal}
+}
+
 // <prefix operator><expression>
 // 前置の演算子である、token.INT、token.BANGの解析と、その右側のexpressionの解析。
 func (p *Parser) parsePrefixExpression() ast.Expression {
@@ -379,7 +390,7 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 
 func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	exp := &ast.CallExpression{Token: p.curToken, Function: function} // ( 関数呼び出しの括弧
-	exp.Arguments = p.parseCallArguments()
+	exp.Arguments = p.parseExpressionList(token.RPAREN)               // ) がくるまでカンマ区切りの引数をパースする。
 	return exp
 }
 
@@ -505,6 +516,101 @@ func (p *Parser) parseIfExpression() ast.Expression {
 	}
 
 	return expression
+}
+
+func (p *Parser) parseArrayLiteral() ast.Expression {
+	// [ をTokenとしてArrayLiteralのノードを作成
+	array := &ast.ArrayLiteral{Token: p.curToken}
+
+	// curTokenが配列の終端である ] になるまで、パースを続ける。
+	array.Elements = p.parseExpressionList(token.RBRACKET)
+
+	return array
+}
+
+func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
+	// [ をTokenとしてIndexExpressionのノードを作成
+	exp := &ast.IndexExpression{Token: p.curToken, Left: left}
+
+	// 添字の中身にトークンを進める。
+	p.nextToken()
+	// 添字の中身のexpressionノードをIndexに入れる。
+	exp.Index = p.parseExpression(LOWEST)
+
+	// 次のトークンがRBRACKET ] であること。そうであればトークンを次へ進め、ここはtrueになる
+	// 添字の終端は ] でないとnilを返す。
+	if !p.expectPeek(token.RBRACKET) {
+		return nil
+	}
+
+	return exp
+}
+
+func (p *Parser) parseExpressionList(end token.TokenType) []ast.Expression {
+	list := []ast.Expression{}
+
+	if p.peekTokenIs(end) {
+		p.nextToken()
+		return list
+	}
+
+	// カンマ区切りの要素にトークンを進める。 [ や ( の次にトークンを進める。
+	p.nextToken()
+	list = append(list, p.parseExpression(LOWEST))
+
+	// 要素の一つ目のパースが終わり、次のトークンが , ならこのループに入る。
+	// , がある限り、パースし続ける。
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken() // , にトークンを進める
+		p.nextToken() // 次の配列の要素にトークンを進める
+		list = append(list, p.parseExpression(LOWEST))
+	}
+
+	// 次のトークンが引数で渡ってきたtokenであること。そうであればトークンを次へ進め、ここはtrueになる
+	// 引数で渡ってくるトークンは ) or ] の二通り。
+	if !p.expectPeek(end) {
+		return nil
+	}
+
+	return list
+}
+
+// { <expression>:<expression>, <expression>:<expression>, ... }
+func (p *Parser) parseHashLiteral() ast.Expression {
+	// { をTokenに入れる。
+	hash := &ast.HashLiteral{Token: p.curToken}
+	// Pairsの初期化。
+	hash.Pairs = make(map[ast.Expression]ast.Expression)
+
+	// 次のtokenが } ではない間は、ハッシュの中身をパースし続ける。
+	for !p.peekTokenIs(token.RBRACE) {
+		p.nextToken()                    // ハッシュの中身にトークンを進める
+		key := p.parseExpression(LOWEST) // キーの式をパースする
+
+		// 次のトークンが : なら、トークンを : に進める。（キーの後は : がくるはず）
+		if !p.expectPeek(token.COLON) {
+			return nil
+		}
+
+		p.nextToken()                      // バリューにトークンを進める
+		value := p.parseExpression(LOWEST) // バリューの式をパースする。
+
+		hash.Pairs[key] = value // パースしたキーバリューをPairsに入れる。goのmapをそのまま利用する。
+
+		// 1組のキーバリューが終わった後は、 } もしくは , がくるはず。
+		// そうではない場合は、hashの構文としておかしいのでnilを返す。
+		if !p.peekTokenIs(token.RBRACE) && !p.expectPeek(token.COMMA) {
+			return nil
+		}
+	}
+
+	// 次のtokenが } だったら、トークンを進める。 } 以外だったらnilを返す。
+	// hashの終端は } であるはず。
+	if !p.expectPeek(token.RBRACE) {
+		return nil
+	}
+
+	return hash
 }
 
 // fn <parameters> <block statement>

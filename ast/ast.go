@@ -219,11 +219,11 @@ func (bs *BlockStatement) TokenLiteral() string { return bs.Token.Literal }
 func (bs *BlockStatement) String() string {
 	var out bytes.Buffer
 
-	out.WriteString("{")
+	//out.WriteString("{")
 	for _, s := range bs.Statements {
 		out.WriteString(s.String())
 	}
-	out.WriteString("}")
+	//out.WriteString("}")
 
 	return out.String()
 }
@@ -258,10 +258,11 @@ func (fl *FunctionLiteral) String() string {
 // <expression>()
 // <expression>(<expression>)
 // <expression>(<expression>, <expression>, <expression>, ...)
-// 関数名は二つあり得る。どちらもExpression（式）
-// - IDENT。ユーザー定義の関数名。こんな感じ。add(2, 3)
-// - functionリテラル。こんな感じ。func(x, y){ x + y }(2, 3)
 // 引数も式を渡せる作り。add(2 + 2, 3 * 5); みたいな構文が有効
+//
+// また、( の左の <expression> は以下の二種類の式があり得る。
+// - Identifier。ユーザー定義もしくは組み込みの関数名。こんな感じ。add(2, 3)、len("sample")
+// - FunctionLiteral。expressionがfunctionリテラルの場合で関数呼び出しのパースがされるということは、即時関数ということになる。こんな感じ。fn(x, y){ x + y }(2, 3)
 type CallExpression struct {
 	Token     token.Token // The '(' token
 	Function  Expression  // Identifier or FunctionLiteral
@@ -282,6 +283,88 @@ func (ce *CallExpression) String() string {
 	out.WriteString("(")
 	out.WriteString(strings.Join(args, ", "))
 	out.WriteString(")")
+
+	return out.String()
+}
+
+// 文字列も式。（評価すれば文字列が返ってくるので式）
+type StringLiteral struct {
+	Token token.Token
+	Value string
+}
+
+func (sl *StringLiteral) expressionNode()      {}
+func (sl *StringLiteral) TokenLiteral() string { return sl.Token.Literal }
+func (sl *StringLiteral) String() string       { return sl.Token.Literal }
+
+type ArrayLiteral struct {
+	Token    token.Token  // the '[' token
+	Elements []Expression // 配列の中は式だったらなんでも入れれる。
+}
+
+func (al *ArrayLiteral) expressionNode()      {}
+func (al *ArrayLiteral) TokenLiteral() string { return al.Token.Literal }
+func (al *ArrayLiteral) String() string {
+	var out bytes.Buffer
+
+	elements := []string{}
+	for _, el := range al.Elements {
+		elements = append(elements, el.String())
+	}
+
+	out.WriteString("[")
+	out.WriteString(strings.Join(elements, ", "))
+	out.WriteString("]")
+
+	return out.String()
+}
+
+// 添字。
+// [1,2,3,4][2]
+// myArray[2]
+// myArray[2 + 1]
+// returnArray()[1]
+type IndexExpression struct {
+	Token token.Token // The [ token
+	Left  Expression  // 添字の対象となるもの。[ の左にあるもの。Elementsを持つnodeであればなんでもいい。
+	Index Expression  // 添字。[] の中身。評価の結果、最終的にIntegerとなる式であればなんでもいい
+}
+
+func (ie *IndexExpression) expressionNode()      {}
+func (ie *IndexExpression) TokenLiteral() string { return ie.Token.Literal }
+func (ie *IndexExpression) String() string {
+	var out bytes.Buffer
+
+	out.WriteString("(")
+	out.WriteString(ie.Left.String())
+	out.WriteString("[")
+	out.WriteString(ie.Index.String())
+	out.WriteString("])")
+
+	return out.String()
+}
+
+// { <expression>:<expression>, <expression>:<expression>, ... }
+// キー、値ともに、式を受け入れる。
+// キーは式を評価した結果、文字列、整数、真偽値になるようなものならOK。
+type HashLiteral struct {
+	Token token.Token               // the '{' token
+	Pairs map[Expression]Expression // キーバリューの組み合わせを配列でもつ
+}
+
+func (hl *HashLiteral) expressionNode()      {}
+func (hl *HashLiteral) TokenLiteral() string { return hl.Token.Literal }
+func (hl *HashLiteral) String() string {
+	var out bytes.Buffer
+
+	pairs := []string{}
+	for key, value := range hl.Pairs {
+		pairs = append(pairs, key.String()+":"+value.String())
+	}
+
+	out.WriteString("{")
+	out.WriteString(strings.Join(pairs, ", "))
+	out.WriteString("}")
 
 	return out.String()
 }

@@ -23,6 +23,9 @@ type Environment struct {
 // 一番外側のスコープまでいった時はそれはルートスコープ（NewEnvironmentで作った環境）
 // （envをスコープごとに区切ることで、クロージャを実現することができる）
 func (e *Environment) Get(name string) (Object, bool) {
+	//j, _ := json.MarshalIndent(e.store, "", " ")
+	//fmt.Printf("現在のstore内容=================\n%v\n", string(j))
+
 	obj, ok := e.store[name]
 	if !ok && e.outer != nil {
 		obj, ok = e.outer.Get(name)
@@ -32,5 +35,8 @@ func (e *Environment) Get(name string) (Object, bool) {
 
 func (e *Environment) Set(name string, val Object) Object {
 	e.store[name] = val
+
+	//j, _ := json.MarshalIndent(e.store, "", " ")
+	//fmt.Printf("store結果=================\n%v\n", string(j))
 	return val
 }
